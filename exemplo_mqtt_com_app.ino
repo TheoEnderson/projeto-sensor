@@ -37,15 +37,15 @@ vector<Aluno> lista;
 int idAtual = 1; // Variável global para controle
 
 // Configurações do Wi-Fi e MQTT
-const char* ssid = "AndroidAp";
-const char* password = "100Pedro";
-const char* mqtt_broker = "07d9a34421014e6598f8331685171c61.s1.eu.hivemq.cloud";
+const char* ssid = "SEU_WIFI_AQUI";
+const char* password = "SUA_SENHA_AQUI";
+const char* mqtt_broker = "SEU_BROKER_MQTT";
 const int mqtt_port = 8883; 
 const char* mqtt_usernameE = "ESP32";
-const char* mqtt_passwordE = "ecJACUIPENSE1";
+const char* mqtt_passwordE = "SUA_SENHA_MQTT";
 
 // URL do Google Script
-const char* googleScriptURL = "https://script.google.com/macros/s/AKfycbz...SUA_URL.../exec";
+const char* googleScriptURL = "URL_DO_SEU_GOOGLE_SCRIPT_AQUI";
 
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
@@ -142,12 +142,19 @@ void setup() {
 
 
 // Função auxiliar para enviar dados
-bool enviarParaGoogle(String nome, int matricula) {
+bool enviarParaGoogle(String tipo, String nome, int matricula, int idSensor = 0) {
   HTTPClient http;
-  http.begin(googleScriptURL); 
+  http.begin(googleScriptURL);
   http.addHeader("Content-Type", "application/x-www-form-urlencoded");
-  
-  String dados = "matricula=" + String(matricula) + "&nome=" + nome;
+
+  String dados = "tipo=" + tipo +
+                 "&matricula=" + String(matricula) +
+                 "&nome=" + nome;
+
+  if (tipo == "cadastro") {
+    dados += "&idSensor=" + String(idSensor);
+  }
+
   int httpResponseCode = http.POST(dados);
   http.end();
 
@@ -155,9 +162,11 @@ bool enviarParaGoogle(String nome, int matricula) {
     Serial.println("Enviado: " + String(httpResponseCode));
     return true;
   }
+
   Serial.println("Erro envio: " + String(httpResponseCode));
   return false;
 }
+
 
 // Função para processar a fila offline
 void processarFilaOffline() {
@@ -201,7 +210,7 @@ void registrarPresenca(String nome, int matricula) {
 
   // 1. Tenta enviar Online
   if (WiFi.status() == WL_CONNECTED) {
-    enviado = enviarParaGoogle(nome, matricula);
+    enviado = enviarParaGoogle("presenca", nome, matricula);
   }
 
   // 2. Se falhar (sem wifi ou erro no server), salva Offline
@@ -234,17 +243,17 @@ void callback(char* topic, uint8_t* payload, unsigned int length) {
   for (int i = 0; i < length; i++) {
     mensagem += (char)payload[i];
   }
-  
+
   Serial.print("Conteudo: ");
   Serial.println(mensagem);
 
-  // Removendo espaços extras do tópico para garantir a comparação
   String topicoStr = String(topic);
-  topicoStr.trim(); 
+  topicoStr.trim();
 
   if (topicoStr == "universidade/cadastro") {
+
     Serial.println("Topico CORRETO! Processando JSON...");
-    
+
     StaticJsonDocument<256> doc;
     DeserializationError error = deserializeJson(doc, mensagem);
 
@@ -254,35 +263,39 @@ void callback(char* topic, uint8_t* payload, unsigned int length) {
       return;
     }
 
-    String nomeCompleto = doc["aluno"] | "Aluno"; 
+    String nomeCompleto = doc["aluno"] | "Aluno";
     int matricula = doc["matricula"];
-    
-    Serial.print("Nome extraido: "); Serial.println(nomeCompleto);
 
-    // Tratamento do nome
+    Serial.print("Nome extraido: ");
+    Serial.println(nomeCompleto);
+
+    // --- Tratamento do nome ---
     String primeiroNome;
     int indiceEspaco = nomeCompleto.indexOf(' ');
     if (indiceEspaco != -1) {
-       primeiroNome = nomeCompleto.substring(0, indiceEspaco);
+      primeiroNome = nomeCompleto.substring(0, indiceEspaco);
     } else {
-       primeiroNome = nomeCompleto;
+      primeiroNome = nomeCompleto;
     }
-    if (primeiroNome.length() > 16) primeiroNome = primeiroNome.substring(0, 16);
+
+    if (primeiroNome.length() > 16)
+      primeiroNome = primeiroNome.substring(0, 16);
 
     lcd.clear();
-    lcd.print("Cadastrar: ");
+    lcd.print("Cadastrar:");
     lcd.setCursor(0, 1);
     lcd.print(primeiroNome);
-    
-    // --- ROTINA DE CADASTRO ---
+
+    // --- ROTINA BIOMETRIA ---
     int p = -1;
-    
+
     Serial.println("Aguardando dedo 1...");
     lcd.clear(); lcd.print("Coloque o dedo");
-    while ((p = finger.getImage()) != FINGERPRINT_OK) { 
-        client.loop(); // Mantém conexao viva
-        yield(); 
+    while ((p = finger.getImage()) != FINGERPRINT_OK) {
+      client.loop();
+      yield();
     }
+
     finger.image2Tz(1);
     Serial.println("Dedo 1 capturado");
 
@@ -292,45 +305,63 @@ void callback(char* topic, uint8_t* payload, unsigned int length) {
 
     Serial.println("Aguardando dedo 2...");
     lcd.clear(); lcd.print("Dedo novamente");
-    while ((p = finger.getImage()) != FINGERPRINT_OK) { 
-        client.loop(); 
-        yield(); 
+    while ((p = finger.getImage()) != FINGERPRINT_OK) {
+      client.loop();
+      yield();
     }
+
     finger.image2Tz(2);
     Serial.println("Dedo 2 capturado");
 
+    // --- Salva modelo ---
     if (finger.createModel() == FINGERPRINT_OK) {
+
       if (finger.storeModel(idAtual) == FINGERPRINT_OK) {
+
         lcd.clear();
-        lcd.print("Salvo ID: "); lcd.print(idAtual);
+        lcd.print("Salvo ID: ");
+        lcd.print(idAtual);
+
         Serial.println("Sucesso! ID salvo: " + String(idAtual));
-        
-        // Adiciona ao vetor
+
+        // Salva no vetor
         Aluno novoAluno;
         strncpy(novoAluno.nome, primeiroNome.c_str(), 19);
+        novoAluno.nome[19] = '\0'; // garante fim da string
         novoAluno.matricula = matricula;
         novoAluno.idSensor = idAtual;
+
         lista.push_back(novoAluno);
-        
         salvarBancoVector();
 
+        // ✅ ENVIA PARA GOOGLE ANTES DE INCREMENTAR
+        enviarParaGoogle("cadastro", primeiroNome, matricula, idAtual);
+
+        // Agora prepara próximo ID
         idAtual++;
+
         preferences.begin("sistema", false);
         preferences.putInt("proximo_id", idAtual);
         preferences.end();
-        
-        registrarPresenca(primeiroNome, matricula); 
+
+      } else {
+        Serial.println("Erro ao salvar modelo no sensor");
       }
+
     } else {
-      lcd.clear(); lcd.print("Erro Digital");
-      Serial.println("Erro ao criar modelo biométrico");
+      lcd.clear();
+      lcd.print("Erro Digital");
+      Serial.println("Erro ao criar modelo biometrico");
     }
+
     delay(2000);
     lcd.clear();
+
   } else {
-      Serial.println("Ignorado: Topico incorreto.");
+    Serial.println("Ignorado: Topico incorreto.");
   }
 }
+
 
 void identificarAluno(int idEncontrado) {
 
