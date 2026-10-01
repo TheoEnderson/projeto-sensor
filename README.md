@@ -77,10 +77,42 @@ Conecte os componentes:
 
 Na IDE do Arduino, instale as bibliotecas `Adafruit Fingerprint Sensor Library`, `Grove - LCD RGB Backlight`, `PubSubClient` e `ArduinoJson`.
 
-Preencha as credenciais no arquivo `projeto-sensor.ino` ou isole as constantes em um arquivo de configuração `config.h`:
+Preencha as credenciais da rede no arquivo `projeto-sensor.ino` ou isole as constantes em um arquivo de configuração `config.h`:
 ```cpp
 const char* ssid = "SEU_WIFI_AQUI";
 const char* password = "SUA_SENHA_AQUI";
-String googleScriptURL = "URL_DO_SEU_GOOGLE_SCRIPT_AQUI";
 ```
-Compile o código definindo o esquema de partição com espaço para LittleFS.
+
+### Setup do Ambiente Cloud
+
+O projeto suporta dois provedores de persistência. Configure o backend de sua preferência:
+
+**Opção A: Google Sheets**
+1. Crie uma nova planilha no Google Sheets.
+2. Acesse as extensões do Apps Script e adicione a lógica de cadastro (ex: recepção de parâmetros GET).
+3. Realize o deploy como Web App com acesso público.
+4. Insira a URL gerada na variável `googleScriptURL` no firmware.
+5. Utilize a página estática correspondente para administração (`frontend_google_sheets.html`).
+
+**Opção B: Supabase**
+1. Crie um projeto no Supabase e defina a tabela `alunos` ou `presencas`.
+2. Colete a `Project URL` e a `Anon Key` no painel da API.
+3. Insira essas chaves diretamente no script JavaScript da página de administração local.
+4. Utilize a página estática correspondente (`frontend_supabase.html`) hospedada localmente ou em uma CDN.
+
+Compile o código definindo o esquema de partição com espaço para o sistema de arquivos Flash (LittleFS).
+
+## Estrutura do Repositório
+
+```text
+projeto-sensor/
+├── projeto-sensor.ino          # Firmware principal com a lógica Offline e WebServer
+├── site.h                      # Conversão do HTML em C-string (PROGMEM) para injeção
+├── examples/
+│   ├── exemplo_mqtt_com_app/   # Código alternativo integrando broker MQTT e App
+│   ├── exemplo_mqtt_simples/   # Teste básico isolado do client MQTT
+│   └── exemplo_sensor_basico/  # Script puro de aferição de hardware do sensor
+└── frontend/
+    ├── frontend_google_sheets.html # Painel focado na integração com Apps Script
+    └── frontend_supabase.html      # SPA configurado para chamadas diretas ao Supabase
+```
