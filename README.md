@@ -6,39 +6,45 @@
 ![MQTT](https://img.shields.io/badge/MQTT-660066?style=for-the-badge&logo=mqtt&logoColor=white)
 ![LittleFS](https://img.shields.io/badge/LittleFS-000000?style=for-the-badge&logo=linux&logoColor=white)
 ![Supabase](https://img.shields.io/badge/Supabase-3ECF8E?style=for-the-badge&logo=supabase&logoColor=white)
+![Google Apps Script](https://img.shields.io/badge/Google_Apps_Script-4285F4?style=for-the-badge&logo=google&logoColor=white)
 
-## O Problema
-O controle de presença físico exige uma máquina dedicada ou folhas de papel na bancada do laboratório. Professores e gestores perdem tempo consolidando assinaturas, e as planilhas manuais geram divergências de dados. O dispositivo resolve isso automatizando a coleta direto no ponto de acesso.
+## Contexto e O Problema Real
+O controle de presença em laboratórios e salas de aula exige uma máquina dedicada operando como ponto escravo ou o uso de folhas de papel na bancada. O hardware foi construído para eliminar a necessidade do computador, automatizando a coleta direto no ponto de acesso e descartando as listas manuais que geram divergências nos dados de frequência.
 
-## Decisões de Arquitetura e Trade-offs
+## Decisões de Engenharia e Trade-offs
 
-### Fila em Flash (LittleFS)
-A rede Wi-Fi oscila em ambientes corporativos e acadêmicos. O firmware grava as biometrias validadas na memória Flash interna do ESP32 (LittleFS) antes do despacho de rede. Quando a conexão cai, os registros acumulam localmente. O sistema retransmite a fila acumulada em lote quando a rede volta, o que impede a perda de dados por queda de sinal.
+### Fila Offline com LittleFS
+A conectividade Wi-Fi oscila em infraestruturas corporativas e acadêmicas. O firmware bufferiza as biometrias validadas na memória Flash interna do ESP32 através do sistema de arquivos LittleFS. Durante quedas de rede, os dados ficam retidos localmente; quando a conexão retorna, o sistema descarrega a fila em lote. Esse trade-off garante tolerância a falhas sem hardware de armazenamento adicional.
 
 ### Protocolo Híbrido
-O projeto divide a carga de rede em duas vias. O MQTT trafega telemetria e feedback visual imediato no display. Requisições HTTP REST gravam a presença final no banco de dados relacional (Supabase) ou em planilhas (Google Sheets). Isso separa o status da máquina do armazenamento primário.
+O sistema separa as rotas de dados conforme a latência exigida. O protocolo MQTT trata a telemetria em tempo real e entrega feedback visual de estado no display. O tráfego de persistência primária opera via HTTP REST em background, enviando os dados consolidados para o banco relacional (Supabase) ou planilhas (Google Sheets).
 
 ### Máquina de Estados Não Bloqueante
-O sensor biométrico (AS608/FPM10A) responde via interface UART. O laço de repetição roda uma máquina de estados finitos que avalia os bytes na porta serial. A substituição da função padrão de atraso pelo cálculo de milissegundos mantém o WebServer embutido e a fila MQTT responsivos enquanto o usuário posiciona o dedo no leitor.
+O sensor FPM10A exige tempo para capturar e comparar o mapa da digital via interface UART. O código de leitura foi estruturado como uma máquina de estados finitos dentro do `loop()`, eliminando o uso de `delay()`. O processamento assíncrono impede que a porta serial congele o WebServer embutido.
 
-## Fluxo de Dados
+### Portal Web Local (site.h)
+O dispositivo carrega um portal de configuração HTML/JS servido direto da memória de programa (PROGMEM). A interface expõe formulários de cadastro na rede de área local (WLAN) sob o IP do ESP32, descartando o desenvolvimento de aplicativos nativos auxiliares para a operação de cadastro.
+
+## Fluxo de Integração
 
 ```mermaid
 flowchart LR
     User([Usuário]) --> |Digital| Sensor[Sensor FPM10A]
     Sensor --> |UART| ESP[ESP32]
     
-    subgraph Borda
+    subgraph Dispositivo de Borda
         ESP
         Mem[LittleFS]
         LCD[Display I2C]
+        Web[WebServer Local]
     end
     
-    ESP <--> |Escreve/Lê| Mem
-    ESP --> |I2C| LCD
+    ESP <--> |Buffer Flash| Mem
+    ESP --> |Display| LCD
+    ESP <--> |Portal LAN| Web
     
-    ESP -->|MQTT| Broker[HiveMQ]
-    ESP -->|HTTP GET/POST| BD[(Supabase / Sheets)]
+    ESP -->|Telemetria MQTT| Broker[HiveMQ]
+    ESP -->|Persistência HTTP| BD[(Supabase / Sheets)]
 
     classDef escuro fill:#161b22,stroke:#00599C,stroke-width:2px,color:#fff;
     classDef hardware fill:#161b22,stroke:#E7352C,stroke-width:2px,color:#fff;
@@ -46,25 +52,24 @@ flowchart LR
     classDef user fill:#161b22,stroke:#660066,stroke-width:2px,color:#fff;
     
     class ESP,Sensor,LCD hardware;
-    class Mem,Broker escuro;
+    class Mem,Broker,Web escuro;
     class BD cloud;
     class User user;
 ```
 
 ## Diário de Bancada
 
-**Ruído UART:** O tempo de resposta do sensor causava perda de pacotes na comunicação serial. O cabo dos pinos RX/TX precisou ser encurtado, e a fixação da taxa de transferência em 57600 bps eliminou a corrupção na transferência da matriz biométrica.
+**Ruído UART:** O tempo de processamento longo do sensor resultou em frames de pacotes truncados na serial. O problema exigiu a redução do tamanho dos cabos entre o módulo e o ESP32, e a fixação da *baud rate* da UART2 em 57600 bps eliminou a corrupção do buffer.
 
-**Consumo de RAM no JSON:** A conversão de pacotes MQTT para objetos C++ com ArduinoJson causava fragmentação de memória. Alocar o documento JSON de forma estática conteve o vazamento na placa.
+**Consumo de RAM no JSON:** A serialização dinâmica de pacotes MQTT causou *heap fragmentation* crítica em tempo de execução. O firmware conteve o vazamento migrando para a declaração estática de documentos do `ArduinoJson` pré-alocados em memória.
 
-**Handshake Óptico:** O leitor exige duas capturas da mesma digital para compilar o modelo. O usuário costuma tirar o dedo rápido demais. Inserir avisos intermediários no display resolveu a falha de captura.
+**Saturação Solar Óptica:** A luz ambiente direta afeta o prisma de leitura óptico. A reflexão corrompe o handshake entre as duas leituras obrigatórias da digital para criação do modelo biométrico.
 
-## Limitações Conhecidas e Próximos Passos
-O circuito atual depende do protocolo NTP para registrar o horário do ponto na nuvem. A falta de um relógio de tempo real (RTC) externo impede medições precisas quando o dispositivo inicia offline. O prisma de vidro do leitor óptico satura sob luz solar direta. A confecção de um case protetor impresso em 3D cobrindo as laterais do sensor está no roteiro das próximas revisões.
+**Compensação de Tempo:** A falta de um RTC físico impede medições corretas de timestamp nativo se o hardware for ligado offline. O código compensa buscando a hora por NTP assim que obtém endereço IP, mas os *timestamps* iniciais em estado desconectado perdem sincronismo exato.
 
-## Montagem e Configuração
+## Hardware e Pinagem
 
-Conecte os componentes:
+Conecte os periféricos à placa controladora:
 
 | Componente | Pino Físico | Pino ESP32 | Função |
 | :--- | :--- | :--- | :--- |
@@ -73,46 +78,44 @@ Conecte os componentes:
 | **Sensor FPM10A** | VCC | 3.3V / 5V | Alimentação |
 | **Display I2C** | SDA | GPIO 21 | Dados I2C |
 | **Display I2C** | SCL | GPIO 22 | Clock I2C |
-| **Ambos** | GND | GND | Aterramento |
-
-Na IDE do Arduino, instale as bibliotecas `Adafruit Fingerprint Sensor Library`, `Grove - LCD RGB Backlight`, `PubSubClient` e `ArduinoJson`.
-
-Preencha as credenciais da rede no arquivo `projeto-sensor.ino` ou isole as constantes em um arquivo de configuração `config.h`:
-```cpp
-const char* ssid = "SEU_WIFI_AQUI";
-const char* password = "SUA_SENHA_AQUI";
-```
-
-### Setup do Ambiente Cloud
-
-O projeto suporta dois provedores de persistência. Configure o backend de sua preferência:
-
-**Opção A: Google Sheets**
-1. Crie uma nova planilha no Google Sheets.
-2. Acesse as extensões do Apps Script e adicione a lógica de cadastro (ex: recepção de parâmetros GET).
-3. Realize o deploy como Web App com acesso público.
-4. Insira a URL gerada na variável `googleScriptURL` no firmware.
-5. Utilize a página estática correspondente para administração (`frontend_google_sheets.html`).
-
-**Opção B: Supabase**
-1. Crie um projeto no Supabase e defina a tabela `alunos` ou `presencas`.
-2. Colete a `Project URL` e a `Anon Key` no painel da API.
-3. Insira essas chaves diretamente no script JavaScript da página de administração local.
-4. Utilize a página estática correspondente (`frontend_supabase.html`) hospedada localmente ou em uma CDN.
-
-Compile o código definindo o esquema de partição com espaço para o sistema de arquivos Flash (LittleFS).
+| **Ambos** | GND | GND | Aterramento comum |
 
 ## Estrutura do Repositório
 
 ```text
 projeto-sensor/
-├── projeto-sensor.ino          # Firmware principal com a lógica Offline e WebServer
-├── site.h                      # Conversão do HTML em C-string (PROGMEM) para injeção
-├── examples/
-│   ├── exemplo_mqtt_com_app/   # Código alternativo integrando broker MQTT e App
-│   ├── exemplo_mqtt_simples/   # Teste básico isolado do client MQTT
-│   └── exemplo_sensor_basico/  # Script puro de aferição de hardware do sensor
-└── frontend/
-    ├── frontend_google_sheets.html # Painel focado na integração com Apps Script
-    └── frontend_supabase.html      # SPA configurado para chamadas diretas ao Supabase
+├── projeto-sensor.ino          # Firmware principal com máquina de estados, Offline Queue e WebServer
+├── site.h                      # Portal local convertido em C-string
+├── examples/                   # Códigos para validação individual de hardware e protocolo
+│   ├── exemplo_mqtt_com_app/
+│   ├── exemplo_mqtt_simples/
+│   └── exemplo_sensor_basico/
+└── frontend/                   # Interfaces SPA estáticas para integração externa
+    ├── frontend_google_sheets.html
+    └── frontend_supabase.html
 ```
+
+## Guia de Configuração e Nuvem
+
+Instale os pré-requisitos na Arduino IDE: `Adafruit Fingerprint Sensor Library`, `Grove - LCD RGB Backlight`, `PubSubClient` e `ArduinoJson`.
+
+### Configuração do Firmware
+1. Defina o SSID e a senha do Wi-Fi em `projeto-sensor.ino`.
+2. Configure o esquema de partição na IDE com reserva para armazenamento de arquivos (ex: *Default 4MB with spiffs/LittleFS*).
+3. Flasheie a placa e observe o IP designado pelo roteador no Monitor Serial.
+
+### Setup Opção A: Google Sheets
+1. Crie uma planilha em branco.
+2. Inicie o Google Apps Script e defina funções `doGet(e)` e `doPost(e)` para iterar as matrizes da planilha e inserir a linha com o ID retornado pelo ESP32.
+3. Implante o projeto como um Web App e libere a permissão de acesso para acesso de "Qualquer pessoa".
+4. Cole a URL fornecida na constante `googleScriptURL` do firmware.
+
+### Setup Opção B: Supabase
+1. Crie o projeto na dashboard do Supabase e gere a tabela com as colunas primárias (id, matricula, timestamp).
+2. Copie a `Project URL` e a `Anon Key` da aba de configurações de API.
+3. Cole as strings no bloco de inicialização do JavaScript no arquivo `frontend/frontend_supabase.html`.
+4. Hospede a interface em uma CDN ou em um Storage estático local.
+
+## Limitações e Próximos Passos
+* Implementar um módulo RTC DS3231 I2C dedicado para rastrear offline *timestamps* puros independente de conexão NTP prévia.
+* Fabricar um case em impressora 3D com formato em abajur (sombreamento óptico) ao redor do prisma biométrico, mitigando interferências da luz do sol na detecção de cumes de digitais.
